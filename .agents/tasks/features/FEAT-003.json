@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-003",
+  "type": "test",
+  "description": "Add the imperative-shell integration test suite using wiremock as a LOCAL fake for api.etrade.com (no live ETrade calls — AC-13), covering the OAuth three-leg flow, the proxy forward with the structural GET-only guarantee end-to-end, /internal/status over the real rustls stack in both auth phases (driving Pending via the serve seam, which also exercises the 503/NotReady branch), nonce-freshness across sequential requests, and the rcgen->fingerprint integration. Then run the full verification gate (cargo build, cargo clippy -D warnings, cargo test) in the workspace root and confirm it is green. Depends on FEAT-002 (needs the shell's serve/oauth_flow seams and injected generators).",
+  "status": "pending",
+  "steps": [
+    "tests/oauth_flow.rs: stand up a wiremock server for the two OAuth legs; drive shell::oauth_flow::run against it with deterministic fake Clock/NonceSource and assert an Authorized is produced, the recorded request-token call's signature base string contains oauth_callback=oob, the access-token call's contains oauth_verifier=<code>, and the two legs carry DISTINCT oauth_nonce values. No live calls.",
+    "tests/proxy_forward.rs: construct the server with an Authorized (Ready) state via the serve seam pointed at a wiremock upstream; assert GET /etrade-api/v1/accounts/list?x=1 reaches the fake as GET /v1/accounts/list?x=1 with the query preserved and a signed Authorization header; a POST to the same prefix returns 405 and the mock records ZERO upstream hits (structural GET-only, end-to-end); an out-of-prefix GET returns 404. With a counter-backed NonceSource injected via serve, two sequential proxied GETs carry distinct oauth_nonce values in the recorded upstream headers.",
+    "tests/status.rs: serve /internal/status over the real rustls stack; assert {\"authorized\":true} with a Ready state and {\"authorized\":false} with a Pending state (passing Pending directly into serve), and that the proxy handler returns 503/ProxyError::NotReady while Pending.",
+    "tests/tls.rs: assert rcgen produces a usable cert whose cert.der() the shell hashes into the exact lowercase colon-hex SHA-256 fingerprint format (consistent with the core tls_fingerprint vector).",
+    "Ensure no test depends on network access to the real ETrade API; all upstream/OAuth endpoints are wiremock. Commit any insta snapshots and proptest-regressions produced.",
+    "Run the full verification gate in /Users/paulbrown/Code/etrade-local-proxy and fix any failures until green."
+  ],
+  "acceptance_criteria": [
+    "`cargo build` completes with no errors (AC-1).",
+    "`cargo clippy --all-targets --all-features -- -D warnings` produces zero warnings (AC-2).",
+    "`cargo test` passes all unit, proptest, and integration tests (AC-3).",
+    "No automated test performs a live ETrade network call; OAuth exchange and upstream forward are covered against wiremock local fakes (AC-13).",
+    "An integration test proves a POST under the proxy prefix returns 405 and is NEVER forwarded upstream (zero mock hits).",
+    "An integration test proves /internal/status reports {\"authorized\":false} in Pending and {\"authorized\":true} in Ready (AC-10 end-to-end), and the proxy handler returns 503 while Pending.",
+    "An integration test proves two sequential proxied requests carry distinct oauth_nonce values (freshness contract)."
+  ],
+  "verification": [
+    "cd /Users/paulbrown/Code/etrade-local-proxy && cargo build",
+    "cd /Users/paulbrown/Code/etrade-local-proxy && cargo clippy --all-targets --all-features -- -D warnings",
+    "cd /Users/paulbrown/Code/etrade-local-proxy && cargo test"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

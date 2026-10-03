@@ -1,0 +1,47 @@
+[package]
+name = "etrade-local-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "Local HTTPS read-only reverse proxy in front of the live ETrade API"
+license = "MIT"
+
+[[bin]]
+name = "etrade-local-proxy"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime (shell): current_thread flavor used by main.
+tokio = { version = "1.48", features = ["rt", "macros", "io-std", "io-util"] }
+# HTTP server + client (shell).
+axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+hyper = "1.7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# TLS (shell).
+rustls = "0.23"
+rcgen = "0.14"
+# OAuth 1.0a signing primitives (pure core).
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+percent-encoding = "2.3"
+url = "2.5"
+# Secret material (core newtypes).
+secrecy = "0.10"
+# Nonce RNG (shell).
+rand = "0.8"
+# Serialization.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Errors.
+thiserror = "2.0"
+anyhow = "1.0"
+# CLI (shell).
+clap = { version = "4.5", features = ["derive"] }
+
+[dev-dependencies]
+proptest = "1.8"
+insta = { version = "1.44", features = ["json"] }
+wiremock = "0.6"
+tokio = { version = "1.48", features = ["rt", "macros", "test-util"] }

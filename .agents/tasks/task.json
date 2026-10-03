@@ -1,0 +1,7 @@
+{
+  "task_id": "task-etrade-local-proxy",
+  "task_description": "Build a from-scratch Rust CLI binary that runs a local HTTPS reverse proxy in front of the live ETrade API, exposing only the GET read surface under /v1/accounts/* (via an /etrade-api prefix). Follows the workspace's idiomatic-functional-Rust steering: a pure functional core (OAuth 1.0a signing, request admission, path mapping, status serialization, config validation, authorize-URL building, TLS fingerprint) property-tested with proptest, behind a thin imperative shell (clap CLI, env config, rcgen self-signed TLS, rustls HTTPS server bound only to 127.0.0.1, three-leg OAuth startup flow with console authorize URL + stdin verifier, reqwest upstream forward with bounded relay, /internal/status). Errors as values (thiserror per module, anyhow only at main); typestate auth lifecycle; newtypes over primitives; injected clock/nonce. Implementation is governed by the APPROVED design at .agents/tasks/design.md.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "blocked_reason": null
+}

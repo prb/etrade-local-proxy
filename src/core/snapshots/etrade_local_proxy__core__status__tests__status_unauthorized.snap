@@ -1,0 +1,6 @@
+---
+source: src/core/status.rs
+assertion_line: 63
+expression: json
+---
+{"authorized":false}

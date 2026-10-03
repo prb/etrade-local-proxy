@@ -19,9 +19,18 @@
 //! Each is isolated here as a named constant / single call site, so a
 //! correction is a one-line change.
 
+use crate::core::env::UpstreamHost;
+
 /// Host for proxied read calls AND the two OAuth token legs. Fixed by FR-5.
 /// Live ETrade API host (see <https://developer.etrade.com/documentation>).
 pub const UPSTREAM_HOST: &str = "api.etrade.com";
+
+/// Sandbox host for proxied read calls AND the two OAuth token legs, selected
+/// by the `--sandbox` flag. Sits beside [`UPSTREAM_HOST`] so both host literals
+/// live in one place; [`crate::core::env::Environment::host`] maps to it.
+///
+/// Documented assumption — confirm on first live sandbox run (see module docs).
+pub const SANDBOX_UPSTREAM_HOST: &str = "apisb.etrade.com";
 
 /// OAuth 1.0a request-token leg path.
 ///
@@ -38,27 +47,45 @@ pub const ACCESS_TOKEN_PATH: &str = "/oauth/access_token";
 /// Documented assumption — confirm on first live run (see module docs).
 pub const AUTHORIZE_URL_BASE: &str = "https://us.etrade.com/e/t/etws/authorize";
 
-/// Full `https` URL for an OAuth leg on [`UPSTREAM_HOST`].
+/// Full `https` URL for an OAuth leg on the given upstream `host`.
 ///
-/// Builds `https://{UPSTREAM_HOST}{path}`, so [`UPSTREAM_HOST`] is the only
-/// source of the host and no literal is duplicated.
-pub fn oauth_endpoint_url(path: &str) -> String {
-    format!("https://{UPSTREAM_HOST}{path}")
+/// The host arrives as data (from the selected [`Environment`]) rather than
+/// read from a constant here, so the two OAuth legs sign and send against the
+/// same host the resource leg does. Builds `https://{host}{path}`.
+///
+/// [`Environment`]: crate::core::env::Environment
+pub fn oauth_endpoint_url(host: &UpstreamHost, path: &str) -> String {
+    format!("https://{}{}", host.as_str(), path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::env::Environment;
 
     #[test]
     fn endpoint_url_uses_single_host_constant() {
+        let live = Environment::Live.host();
         assert_eq!(
-            oauth_endpoint_url(REQUEST_TOKEN_PATH),
+            oauth_endpoint_url(&live, REQUEST_TOKEN_PATH),
             "https://api.etrade.com/oauth/request_token"
         );
         assert_eq!(
-            oauth_endpoint_url(ACCESS_TOKEN_PATH),
+            oauth_endpoint_url(&live, ACCESS_TOKEN_PATH),
             "https://api.etrade.com/oauth/access_token"
+        );
+    }
+
+    #[test]
+    fn endpoint_url_uses_sandbox_host() {
+        let sandbox = Environment::Sandbox.host();
+        assert_eq!(
+            oauth_endpoint_url(&sandbox, REQUEST_TOKEN_PATH),
+            "https://apisb.etrade.com/oauth/request_token"
+        );
+        assert_eq!(
+            oauth_endpoint_url(&sandbox, ACCESS_TOKEN_PATH),
+            "https://apisb.etrade.com/oauth/access_token"
         );
     }
 

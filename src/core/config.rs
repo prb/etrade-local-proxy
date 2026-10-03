@@ -2,6 +2,7 @@
 //! shell, so validation (AC-11) is unit-testable without touching real env
 //! vars. Empty strings are treated as missing.
 
+use crate::core::env::Environment;
 use crate::core::error::ConfigError;
 use crate::core::newtypes::{ConsumerKey, ConsumerSecret, ListenPort};
 
@@ -20,6 +21,7 @@ pub struct Config {
     consumer_key: ConsumerKey,
     consumer_secret: ConsumerSecret,
     port: ListenPort,
+    environment: Environment,
 }
 
 impl Config {
@@ -34,12 +36,22 @@ impl Config {
     pub fn port(&self) -> ListenPort {
         self.port
     }
+
+    /// The selected ETrade environment; its [`Environment::host`] drives both
+    /// OAuth legs and the proxied read-call base URL.
+    pub fn environment(&self) -> Environment {
+        self.environment
+    }
 }
 
 /// Validate an [`EnvSnapshot`] plus the chosen port into a [`Config`]. Missing
 /// or empty credential variables yield a typed [`ConfigError`] naming the
 /// variable (never the value).
-pub fn build_config(env: &EnvSnapshot, port: ListenPort) -> Result<Config, ConfigError> {
+pub fn build_config(
+    env: &EnvSnapshot,
+    port: ListenPort,
+    environment: Environment,
+) -> Result<Config, ConfigError> {
     let consumer_key = non_empty(env.consumer_key.as_deref())
         .ok_or_else(|| classify(env.consumer_key.as_deref(), Credential::Key))?;
     let consumer_secret = non_empty(env.consumer_secret.as_deref())
@@ -49,6 +61,7 @@ pub fn build_config(env: &EnvSnapshot, port: ListenPort) -> Result<Config, Confi
         consumer_key: ConsumerKey::new(consumer_key),
         consumer_secret: ConsumerSecret::new(consumer_secret),
         port,
+        environment,
     })
 }
 
@@ -90,10 +103,21 @@ mod tests {
             consumer_key: Some("ckey".into()),
             consumer_secret: Some("csec".into()),
         };
-        let config = build_config(&env, port()).unwrap();
+        let config = build_config(&env, port(), Environment::Live).unwrap();
         assert_eq!(config.consumer_key().as_str(), "ckey");
         assert_eq!(config.consumer_secret().secret().expose_secret(), "csec");
         assert_eq!(config.port().get(), 8443);
+        assert_eq!(config.environment(), Environment::Live);
+    }
+
+    #[test]
+    fn sandbox_environment_is_carried() {
+        let env = EnvSnapshot {
+            consumer_key: Some("ckey".into()),
+            consumer_secret: Some("csec".into()),
+        };
+        let config = build_config(&env, port(), Environment::Sandbox).unwrap();
+        assert_eq!(config.environment(), Environment::Sandbox);
     }
 
     #[test]
@@ -103,7 +127,7 @@ mod tests {
             consumer_secret: Some("csec".into()),
         };
         assert_eq!(
-            build_config(&env, port()).unwrap_err(),
+            build_config(&env, port(), Environment::Live).unwrap_err(),
             ConfigError::MissingConsumerKey
         );
     }
@@ -115,7 +139,7 @@ mod tests {
             consumer_secret: Some("csec".into()),
         };
         assert_eq!(
-            build_config(&env, port()).unwrap_err(),
+            build_config(&env, port(), Environment::Live).unwrap_err(),
             ConfigError::EmptyConsumerKey
         );
     }
@@ -127,7 +151,7 @@ mod tests {
             consumer_secret: None,
         };
         assert_eq!(
-            build_config(&env, port()).unwrap_err(),
+            build_config(&env, port(), Environment::Live).unwrap_err(),
             ConfigError::MissingConsumerSecret
         );
     }
@@ -139,7 +163,7 @@ mod tests {
             consumer_secret: Some("".into()),
         };
         assert_eq!(
-            build_config(&env, port()).unwrap_err(),
+            build_config(&env, port(), Environment::Live).unwrap_err(),
             ConfigError::EmptyConsumerSecret
         );
     }

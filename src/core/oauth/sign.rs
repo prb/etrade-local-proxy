@@ -15,6 +15,7 @@ use sha1::Sha1;
 use super::base_string::signature_base_string;
 use super::params::{oauth_params, OauthParams, SigningInput};
 use super::{oauth_encode, HttpMethod};
+use crate::core::env::UpstreamHost;
 use crate::core::newtypes::{ConsumerSecret, Nonce, Timestamp, TokenSecret};
 
 type HmacSha1 = Hmac<Sha1>;
@@ -82,8 +83,11 @@ pub struct SignedLeg {
 /// `Resource`) and pairs it with the leg's public token — so the token/secret
 /// pairing is the single expressible option. For the resource leg the caller
 /// passes the already-split `query_params`; the two OAuth token legs pass an
-/// empty slice. Nonce and timestamp are injected.
+/// empty slice. The upstream `host` arrives as data (from the selected
+/// [`UpstreamHost`]) so the base string is signed against the same host the
+/// request is sent to. Nonce and timestamp are injected.
 pub fn sign_leg(
+    host: &UpstreamHost,
     input: &SigningInput<'_>,
     consumer_secret: &ConsumerSecret,
     query_params: &[(String, String)],
@@ -111,7 +115,7 @@ pub fn sign_leg(
     let mut base_params = oauth_params.as_pairs();
     base_params.extend(query_params.iter().cloned());
 
-    let base_url = base_url_for(input);
+    let base_url = base_url_for(host, input);
     let base = signature_base_string(&HttpMethod::Get, &base_url, &base_params);
     let signature = sign_hmac_sha1(&base, &key);
     let header = authorization_header(&oauth_params, &signature);
@@ -130,17 +134,17 @@ pub fn sign_leg(
 /// single enforcing call site for production signing.
 ///
 /// [`upstream_base_url`]: super::base_string::upstream_base_url
-fn base_url_for(input: &SigningInput<'_>) -> String {
+fn base_url_for(host: &UpstreamHost, input: &SigningInput<'_>) -> String {
     use super::endpoints;
     match input {
         SigningInput::RequestToken { .. } => {
-            endpoints::oauth_endpoint_url(endpoints::REQUEST_TOKEN_PATH)
+            endpoints::oauth_endpoint_url(host, endpoints::REQUEST_TOKEN_PATH)
         }
         SigningInput::AccessToken { .. } => {
-            endpoints::oauth_endpoint_url(endpoints::ACCESS_TOKEN_PATH)
+            endpoints::oauth_endpoint_url(host, endpoints::ACCESS_TOKEN_PATH)
         }
         SigningInput::Resource { path, .. } => {
-            super::base_string::upstream_base_url(path.as_str())
+            super::base_string::upstream_base_url(host, path.as_str())
         }
     }
 }
@@ -148,9 +152,15 @@ fn base_url_for(input: &SigningInput<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::env::Environment;
     use crate::core::newtypes::{AccessToken, ConsumerKey, RequestToken, ResourcePath, Verifier};
     use crate::core::oauth::base_string;
     use proptest::prelude::*;
+
+    /// The live host, used by the default-path assertions below.
+    fn live_host() -> UpstreamHost {
+        Environment::Live.host()
+    }
 
     fn nonce() -> Nonce {
         Nonce::new("nonce-xyz")
@@ -225,6 +235,7 @@ mod tests {
         let key = ConsumerKey::new("ckey");
         let cs = ConsumerSecret::new("csec");
         let signed = sign_leg(
+            &live_host(),
             &SigningInput::RequestToken {
                 consumer_key: &key,
                 callback: "oob",
@@ -269,7 +280,7 @@ mod tests {
         ];
 
         for input in &inputs {
-            let signed = sign_leg(input, &cs, &[], &nonce(), &ts());
+            let signed = sign_leg(&live_host(), input, &cs, &[], &nonce(), &ts());
             let mut from_header: Vec<(String, String)> =
                 parse_header_pairs(&signed.authorization_header)
                     .into_iter()
@@ -306,9 +317,9 @@ mod tests {
             };
             // Reproduce sign_leg's base-string input to assert the base URL.
             let params = oauth_params(&input, &nonce, &ts);
-            let base_url = base_string::upstream_base_url(path.as_str());
+            let base_url = base_string::upstream_base_url(&live_host(), path.as_str());
             let base = signature_base_string(&HttpMethod::Get, &base_url, &params.as_pairs());
-            let full = sign_leg(&input, &cs, &[], &nonce, &ts);
+            let full = sign_leg(&live_host(), &input, &cs, &[], &nonce, &ts);
             (base, full.authorization_header)
         };
 
@@ -325,6 +336,37 @@ mod tests {
         // Different mapped paths therefore produce different signatures.
         assert_ne!(base_a, base_b);
         assert_ne!(header_a, header_b);
+    }
+
+    #[test]
+    fn resource_leg_base_string_uses_sandbox_host() {
+        // Signing matches sending: a Resource leg signed with the sandbox host
+        // must compute its base string against apisb.etrade.com, never the live
+        // host.
+        let key = ConsumerKey::new("ckey");
+        let cs = ConsumerSecret::new("csec");
+        let at = AccessToken::new("acctok");
+        let ats = TokenSecret::new("accsec");
+        let path = ResourcePath::new("/v1/accounts/list");
+        let sandbox = Environment::Sandbox.host();
+
+        let input = SigningInput::Resource {
+            consumer_key: &key,
+            access_token: &at,
+            access_token_secret: &ats,
+            path: &path,
+        };
+
+        // Reproduce sign_leg's base-string input under the sandbox host.
+        let params = oauth_params(&input, &nonce(), &ts());
+        let base_url = base_string::upstream_base_url(&sandbox, path.as_str());
+        let base = signature_base_string(&HttpMethod::Get, &base_url, &params.as_pairs());
+
+        assert!(base.contains(&oauth_encode("https://apisb.etrade.com/v1/accounts/list")));
+        assert!(!base.contains(&oauth_encode("https://api.etrade.com/v1/accounts/list")));
+
+        // sign_leg itself signs over the same sandbox base URL without panicking.
+        let _ = sign_leg(&sandbox, &input, &cs, &[], &nonce(), &ts());
     }
 
     proptest! {
@@ -347,14 +389,14 @@ mod tests {
                 path: &path,
             };
             let params = oauth_params(&input, &nonce, &ts);
-            let base_url = base_string::upstream_base_url(&mapped);
+            let base_url = base_string::upstream_base_url(&live_host(), &mapped);
             let base = signature_base_string(&HttpMethod::Get, &base_url, &params.as_pairs());
             // sign_leg uses exactly this base URL internally; confirm the
             // encoded upstream URL is present in the base string.
             let encoded_url = oauth_encode(&format!("https://api.etrade.com{mapped}"));
             prop_assert!(base.contains(&encoded_url));
             // sign_leg produces a header for the same input without panicking.
-            let _ = sign_leg(&input, &cs, &[], &nonce, &ts);
+            let _ = sign_leg(&live_host(), &input, &cs, &[], &nonce, &ts);
         }
 
         // AC-4: fixed nonce/timestamp => identical header; distinct ones differ
@@ -380,8 +422,8 @@ mod tests {
                 access_token_secret: &ats,
                 path: &path,
             };
-            let a = sign_leg(&input, &cs, &[], &nonce, &ts);
-            let b = sign_leg(&input, &cs, &[], &nonce, &ts);
+            let a = sign_leg(&live_host(), &input, &cs, &[], &nonce, &ts);
+            let b = sign_leg(&live_host(), &input, &cs, &[], &nonce, &ts);
             prop_assert_eq!(a.authorization_header, b.authorization_header);
         }
 
@@ -404,8 +446,8 @@ mod tests {
                 access_token_secret: &ats,
                 path: &path,
             };
-            let a = sign_leg(&input, &cs, &[], &Nonce::new(n1), &ts);
-            let b = sign_leg(&input, &cs, &[], &Nonce::new(n2), &ts);
+            let a = sign_leg(&live_host(), &input, &cs, &[], &Nonce::new(n1), &ts);
+            let b = sign_leg(&live_host(), &input, &cs, &[], &Nonce::new(n2), &ts);
             prop_assert_ne!(a.authorization_header, b.authorization_header);
         }
 
@@ -447,7 +489,7 @@ mod tests {
                 },
             };
 
-            let signed = sign_leg(&input, &cs, &[], &nonce, &ts);
+            let signed = sign_leg(&live_host(), &input, &cs, &[], &nonce, &ts);
             let mut from_header: Vec<(String, String)> =
                 parse_header_pairs(&signed.authorization_header)
                     .into_iter()

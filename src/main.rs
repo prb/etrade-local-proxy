@@ -11,6 +11,7 @@ use anyhow::Context;
 use clap::Parser;
 
 use etrade_local_proxy::core::config::build_config;
+use etrade_local_proxy::core::env::Environment;
 use etrade_local_proxy::core::newtypes::ListenPort;
 use etrade_local_proxy::shell::clock_nonce::{Clock, NonceSource, RandomNonceSource, SystemClock};
 use etrade_local_proxy::shell::{env, oauth_flow, prompt, server, state, tls};
@@ -22,6 +23,11 @@ struct Cli {
     /// Loopback TCP port to listen on.
     #[arg(long, default_value_t = 8443)]
     port: u16,
+
+    /// Target the ETrade sandbox (apisb.etrade.com) instead of the live
+    /// environment. Absent = live (api.etrade.com).
+    #[arg(long, default_value_t = false)]
+    sandbox: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -40,11 +46,19 @@ async fn main() -> ExitCode {
 async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let port = ListenPort::new(cli.port);
+    // The `--sandbox` flag is the only interface for host selection (no env
+    // var); absent = live, present = sandbox.
+    let environment = if cli.sandbox {
+        Environment::Sandbox
+    } else {
+        Environment::Live
+    };
 
     // Validate config BEFORE binding any socket, so a missing credential exits
     // non-zero with a message naming the variable.
     let snapshot = env::snapshot();
-    let config = build_config(&snapshot, port).context("invalid configuration")?;
+    let config =
+        build_config(&snapshot, port, environment).context("invalid configuration")?;
     let config = Arc::new(config);
 
     // Ephemeral TLS; prints the fingerprint to stdout.

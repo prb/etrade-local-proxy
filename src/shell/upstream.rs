@@ -9,6 +9,7 @@
 use reqwest::Client;
 
 use crate::core::config::Config;
+use crate::core::env::UpstreamHost;
 use crate::core::newtypes::ResourcePath;
 use crate::core::oauth::base_string::upstream_base_url;
 use crate::core::oauth::params::SigningInput;
@@ -52,10 +53,15 @@ pub async fn forward(
     let (path, query_params) = split_query(mapped_path);
     let resource_path = ResourcePath::new(path.clone());
 
+    // The selected environment's upstream host, threaded as data so the signed
+    // base URI matches the sent URL exactly.
+    let host = config.environment().host();
+
     // Fresh nonce/timestamp immediately before signing.
     let ts = clock.now_unix();
     let nonce = nonces.next();
     let signed = sign_leg(
+        &host,
         &SigningInput::Resource {
             consumer_key: config.consumer_key(),
             access_token: authorized.access_token(),
@@ -71,7 +77,7 @@ pub async fn forward(
     // Build the wire URL from the SAME signed pairs (never the raw client query)
     // so the signed set and sent set are byte-identical.
     let wire = wire_query(&query_params);
-    let url = build_url(base_url_override, &path, &wire);
+    let url = build_url(&host, base_url_override, &path, &wire);
 
     let response = client
         .get(&url)
@@ -101,13 +107,13 @@ pub async fn forward(
     })
 }
 
-/// Build the outbound URL. Uses `upstream_base_url` for the real host so the
-/// sent host matches the signed base URI exactly; a test override replaces the
-/// host while preserving the path and query.
-fn build_url(base_url_override: Option<&str>, path: &str, wire: &str) -> String {
+/// Build the outbound URL. Uses `upstream_base_url` for the selected `host` so
+/// the sent host matches the signed base URI exactly; a test override replaces
+/// the host while preserving the path and query.
+fn build_url(host: &UpstreamHost, base_url_override: Option<&str>, path: &str, wire: &str) -> String {
     let base = match base_url_override {
         Some(base) => format!("{}{}", base.trim_end_matches('/'), path),
-        None => upstream_base_url(path),
+        None => upstream_base_url(host, path),
     };
     if wire.is_empty() {
         base
@@ -135,6 +141,7 @@ async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, ProxyE
 mod tests {
     use super::*;
     use crate::core::config::{build_config, EnvSnapshot};
+    use crate::core::env::Environment;
     use crate::core::newtypes::{AccessToken, ListenPort, TokenSecret};
     use crate::core::status::Unauthorized;
     use crate::shell::clock_nonce::{CounterNonceSource, FixedClock};
@@ -146,7 +153,7 @@ mod tests {
             consumer_key: Some("ckey".into()),
             consumer_secret: Some("csec".into()),
         };
-        build_config(&env, ListenPort::new(8443)).unwrap()
+        build_config(&env, ListenPort::new(8443), Environment::Live).unwrap()
     }
 
     fn authorized() -> Authorized {
@@ -155,17 +162,27 @@ mod tests {
 
     #[test]
     fn build_url_preserves_path_and_query() {
+        let live = Environment::Live.host();
         assert_eq!(
-            build_url(Some("http://127.0.0.1:9000"), "/v1/accounts/list", "x=1"),
+            build_url(&live, Some("http://127.0.0.1:9000"), "/v1/accounts/list", "x=1"),
             "http://127.0.0.1:9000/v1/accounts/list?x=1"
         );
         assert_eq!(
-            build_url(Some("http://127.0.0.1:9000"), "/v1/accounts/list", ""),
+            build_url(&live, Some("http://127.0.0.1:9000"), "/v1/accounts/list", ""),
             "http://127.0.0.1:9000/v1/accounts/list"
         );
         assert_eq!(
-            build_url(None, "/v1/accounts/list", ""),
+            build_url(&live, None, "/v1/accounts/list", ""),
             "https://api.etrade.com/v1/accounts/list"
+        );
+    }
+
+    #[test]
+    fn build_url_none_uses_sandbox_host() {
+        let sandbox = Environment::Sandbox.host();
+        assert_eq!(
+            build_url(&sandbox, None, "/v1/accounts/list", ""),
+            "https://apisb.etrade.com/v1/accounts/list"
         );
     }
 

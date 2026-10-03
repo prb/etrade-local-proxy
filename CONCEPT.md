@@ -12,7 +12,7 @@ Credentials and configuration:
 
 - The ETrade consumer key and consumer secret are read from environment variables (`ETRADE_CONSUMER_KEY` and `ETRADE_CONSUMER_SECRET`).
 - The access token is held in memory only. It is never persisted to disk. A fresh OAuth authorization flow runs on every startup, and only at startup.
-- The proxy targets the live ETrade environment. There is no sandbox toggle by design; safety rests entirely on the read-only proxy surface described below.
+- The proxy targets the live ETrade environment by default. A `--sandbox` flag switches the upstream host to the ETrade sandbox (`apisb.etrade.com`) for the API and both OAuth token legs; without the flag the live host (`api.etrade.com`) is used. The flag encapsulates the host difference so callers never deal with the `apisb` vs `api` distinction directly. The authorize URL (`us.etrade.com`) is the same in both environments. This read-only sandbox/live toggle does not weaken the safety model: isolation rests on the GET-only verb filtering described below, which applies identically in both environments, so there is no way to reach a write endpoint regardless of host.
 
 Proxy surface (read-only by design):
 

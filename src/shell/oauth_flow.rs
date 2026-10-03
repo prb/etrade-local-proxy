@@ -12,6 +12,7 @@ use reqwest::Client;
 use crate::core::authorize_url::authorize_url;
 use crate::core::config::Config;
 use crate::core::error::{parse_oauth_token_response, OauthTokenResponse};
+use crate::core::env::UpstreamHost;
 use crate::core::newtypes::{AccessToken, RequestToken, TokenSecret, Verifier};
 use crate::core::oauth::endpoints::{oauth_endpoint_url, ACCESS_TOKEN_PATH, REQUEST_TOKEN_PATH};
 use crate::core::oauth::params::SigningInput;
@@ -42,10 +43,15 @@ pub async fn run(
 ) -> Result<Authorized, OauthFlowError> {
     let client = Client::new();
 
+    // The selected environment's upstream host, threaded as data into both
+    // signing and URL construction so signing matches sending.
+    let host = config.environment().host();
+
     // --- Leg 1: request token (fresh nonce/ts) ---
     let ts = clock.now_unix();
     let nonce = nonces.next();
     let leg1 = sign_leg(
+        &host,
         &SigningInput::RequestToken {
             consumer_key: config.consumer_key(),
             callback: CALLBACK_OOB,
@@ -56,7 +62,7 @@ pub async fn run(
         &ts,
     );
 
-    let request_token_url = endpoint_url(base_url_override, REQUEST_TOKEN_PATH);
+    let request_token_url = endpoint_url(&host, base_url_override, REQUEST_TOKEN_PATH);
     let body = post_leg(
         &client,
         &request_token_url,
@@ -89,6 +95,7 @@ pub async fn run(
     let ts = clock.now_unix();
     let nonce = nonces.next();
     let leg2 = sign_leg(
+        &host,
         &SigningInput::AccessToken {
             consumer_key: config.consumer_key(),
             request_token: &rt,
@@ -101,7 +108,7 @@ pub async fn run(
         &ts,
     );
 
-    let access_token_url = endpoint_url(base_url_override, ACCESS_TOKEN_PATH);
+    let access_token_url = endpoint_url(&host, base_url_override, ACCESS_TOKEN_PATH);
     let body = post_leg(
         &client,
         &access_token_url,
@@ -120,11 +127,11 @@ pub async fn run(
 
 /// Build a leg URL, honoring a test base-URL override (so the flow can be
 /// pointed at a local wiremock server). The override replaces the
-/// `https://api.etrade.com` host; the leg path is preserved.
-fn endpoint_url(base_url_override: Option<&str>, path: &str) -> String {
+/// `https://{host}` host; the leg path is preserved.
+fn endpoint_url(host: &UpstreamHost, base_url_override: Option<&str>, path: &str) -> String {
     match base_url_override {
         Some(base) => format!("{}{}", base.trim_end_matches('/'), path),
-        None => oauth_endpoint_url(path),
+        None => oauth_endpoint_url(host, path),
     }
 }
 
@@ -163,6 +170,7 @@ fn parse_leg(body: &str, endpoint: &'static str) -> Result<OauthTokenResponse, O
 mod tests {
     use super::*;
     use crate::core::config::{build_config, EnvSnapshot};
+    use crate::core::env::Environment;
     use crate::core::newtypes::ListenPort;
     use crate::shell::clock_nonce::{CounterNonceSource, FixedClock};
 
@@ -171,22 +179,32 @@ mod tests {
             consumer_key: Some("ckey".into()),
             consumer_secret: Some("csec".into()),
         };
-        build_config(&env, ListenPort::new(8443)).unwrap()
+        build_config(&env, ListenPort::new(8443), Environment::Live).unwrap()
     }
 
     #[test]
     fn endpoint_url_uses_override_host() {
+        let live = Environment::Live.host();
         assert_eq!(
-            endpoint_url(Some("http://127.0.0.1:9000"), "/oauth/request_token"),
+            endpoint_url(&live, Some("http://127.0.0.1:9000"), "/oauth/request_token"),
             "http://127.0.0.1:9000/oauth/request_token"
         );
         assert_eq!(
-            endpoint_url(Some("http://127.0.0.1:9000/"), "/oauth/request_token"),
+            endpoint_url(&live, Some("http://127.0.0.1:9000/"), "/oauth/request_token"),
             "http://127.0.0.1:9000/oauth/request_token"
         );
         assert_eq!(
-            endpoint_url(None, "/oauth/request_token"),
+            endpoint_url(&live, None, "/oauth/request_token"),
             "https://api.etrade.com/oauth/request_token"
+        );
+    }
+
+    #[test]
+    fn endpoint_url_none_uses_sandbox_host() {
+        let sandbox = Environment::Sandbox.host();
+        assert_eq!(
+            endpoint_url(&sandbox, None, "/oauth/request_token"),
+            "https://apisb.etrade.com/oauth/request_token"
         );
     }
 

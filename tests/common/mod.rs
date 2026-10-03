@@ -11,15 +11,17 @@
 //! parameter set.
 
 use etrade_local_proxy::core::config::{build_config, Config, EnvSnapshot};
+use etrade_local_proxy::core::env::Environment;
 use etrade_local_proxy::core::newtypes::ListenPort;
 
-/// A `Config` built from fixed, non-secret test credentials.
+/// A `Config` built from fixed, non-secret test credentials, targeting the live
+/// environment (the default).
 pub fn test_config() -> Config {
     let env = EnvSnapshot {
         consumer_key: Some("ckey".into()),
         consumer_secret: Some("csec".into()),
     };
-    build_config(&env, ListenPort::new(8443)).expect("valid test config")
+    build_config(&env, ListenPort::new(8443), Environment::Live).expect("valid test config")
 }
 
 /// Parse the `(name, value)` pairs out of a rendered `OAuth ...` header,

@@ -1,17 +1,18 @@
 //! Signature base string construction per RFC 5849 §3.4.1 (pure).
 
-use super::{endpoints, oauth_encode, HttpMethod};
+use super::{oauth_encode, HttpMethod};
+use crate::core::env::UpstreamHost;
 
 /// Build the normalized base URI per RFC 5849 §3.4.1.2 for a mapped upstream
-/// path: lowercase scheme `https`, lowercase host [`endpoints::UPSTREAM_HOST`],
-/// default port 443 omitted, path only, no query, no fragment.
+/// path: lowercase scheme `https`, lowercase `host`, default port 443 omitted,
+/// path only, no query, no fragment.
 ///
 /// This is the single construction site for the signed base URI, so the
-/// normalization rule cannot drift. The host comes from the one
-/// [`endpoints::UPSTREAM_HOST`] constant and is already lowercase and
-/// port-free; callers must route all base-URI construction through here.
-pub fn upstream_base_url(path: &str) -> String {
-    format!("https://{}{}", endpoints::UPSTREAM_HOST, path)
+/// normalization rule cannot drift. The host arrives as data (the selected
+/// [`UpstreamHost`]) and is already lowercase and port-free; callers must route
+/// all base-URI construction through here so signing matches sending.
+pub fn upstream_base_url(host: &UpstreamHost, path: &str) -> String {
+    format!("https://{}{}", host.as_str(), path)
 }
 
 /// Build the signature base string.
@@ -56,13 +57,22 @@ pub fn signature_base_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::env::Environment;
     use proptest::prelude::*;
 
     #[test]
     fn upstream_base_url_normalized() {
         assert_eq!(
-            upstream_base_url("/v1/accounts/list"),
+            upstream_base_url(&Environment::Live.host(), "/v1/accounts/list"),
             "https://api.etrade.com/v1/accounts/list"
+        );
+    }
+
+    #[test]
+    fn upstream_base_url_sandbox_host() {
+        assert_eq!(
+            upstream_base_url(&Environment::Sandbox.host(), "/v1/accounts/list"),
+            "https://apisb.etrade.com/v1/accounts/list"
         );
     }
 

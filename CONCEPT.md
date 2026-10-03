@@ -22,7 +22,7 @@ Proxy surface (read-only by design):
 Startup authorization validation:
 
 - After the OAuth flow produces an access token and before the proxy begins serving, the proxy makes a single signed, lightweight read call to validate that the token actually works: `GET /v1/accounts/list` (the lightest accounts read; no parameters, no account id required). This uses the same signed-GET machinery as the proxy forward path.
-- On success, the proxy logs a terse console confirmation including the number of accounts returned (e.g. `info: authorization validated via GET /v1/accounts/list — N accounts`). It does not log the account data itself.
+- On success (HTTP 2xx), the proxy logs a terse console confirmation (e.g. `info: authorization validated via GET /v1/accounts/list (HTTP 200)`). The 2xx status is the entire authorization signal; the response body (which ETrade returns as XML) is not parsed, and no account data is logged.
 - On failure (non-2xx response or network error), the proxy fails fast: it logs the failure and exits with an error rather than coming up. A proxy that cannot make a validated API call is worse than one that reports the problem immediately; there is no point keeping a non-working connection alive.
 
 Status endpoint:

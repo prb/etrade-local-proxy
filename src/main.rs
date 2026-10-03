@@ -83,7 +83,7 @@ async fn run() -> anyhow::Result<()> {
     // serving. On any non-2xx or transport error this returns an error that
     // `?`/`.context` propagate to `main`, which exits non-zero WITHOUT serving.
     let client = reqwest::Client::new();
-    let account_count = probe::validate(
+    probe::validate(
         &client,
         &config,
         &authorized,
@@ -93,16 +93,7 @@ async fn run() -> anyhow::Result<()> {
     )
     .await
     .context("authorization validation failed")?;
-    match account_count {
-        Some(n) => {
-            eprintln!("info: authorization validated via GET /v1/accounts/list \u{2014} {n} accounts");
-        }
-        None => {
-            eprintln!(
-                "info: authorization validated via GET /v1/accounts/list \u{2014} account count unknown"
-            );
-        }
-    }
+    eprintln!("info: authorization validated via GET /v1/accounts/list (HTTP 200)");
 
     // Store the token and serve.
     let auth = state::ready(authorized);

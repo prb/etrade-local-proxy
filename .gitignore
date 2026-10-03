@@ -1,1 +1,7 @@
 /target
+
+# rustfmt backups
+**/*.rs.bk
+
+# Agent workflow scaffolding (process artifacts, not product)
+/.agents

@@ -3,12 +3,13 @@
 //!
 //! Drives `probe::validate` directly with the wiremock `base_url_override`, the
 //! deterministic clock/nonce fakes, and asserts:
-//!   * SUCCESS — a 200 `AccountListResponse` with a known N yields `Ok(Some(N))`
-//!     and the probe sends a signed `GET /v1/accounts/list`;
+//!   * SUCCESS — a 200 response validates the token (`Ok(())`) and the probe
+//!     sends a signed `GET /v1/accounts/list`;
 //!   * FAIL-FAST — a 401 yields `Err(ProbeError::NonSuccessStatus { code: 401 })`
 //!     so startup would abort;
-//!   * 2xx-UNPARSEABLE — a 200 with an unexpected body yields `Ok(None)`
-//!     (authorization validated, count unknown, no error).
+//!   * BODY-IGNORED — a 200 with an arbitrary body still validates, because the
+//!     probe keys only on the status (ETrade returns XML here and the probe
+//!     needs nothing from the body).
 
 mod common;
 
@@ -29,12 +30,13 @@ fn authorized() -> etrade_local_proxy::core::status::Authorized {
 }
 
 #[tokio::test]
-async fn success_counts_accounts_and_signs_request() {
+async fn success_validates_and_signs_request() {
+    // ETrade returns XML for accounts/list; the probe does not parse it.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/accounts/list"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"{"AccountListResponse":{"Accounts":{"Account":[{"accountId":"1"},{"accountId":"2"}]}}}"#,
+            r#"<?xml version="1.0" encoding="UTF-8"?><AccountListResponse><Accounts><Account><accountId>1</accountId></Account><Account><accountId>2</accountId></Account></Accounts></AccountListResponse>"#,
         ))
         .mount(&server)
         .await;
@@ -45,7 +47,7 @@ async fn success_counts_accounts_and_signs_request() {
     let clock = FixedClock::new(1_700_000_000);
     let nonces = CounterNonceSource::new();
 
-    let count = probe::validate(
+    probe::validate(
         &client,
         &config,
         &authed,
@@ -54,8 +56,7 @@ async fn success_counts_accounts_and_signs_request() {
         &nonces,
     )
     .await
-    .expect("probe succeeds");
-    assert_eq!(count, Some(2));
+    .expect("a 200 response validates the token");
 
     // The probe sent exactly one signed GET to the probe path.
     let requests = server.received_requests().await.unwrap();
@@ -104,11 +105,12 @@ async fn non_success_status_fails_fast() {
 }
 
 #[tokio::test]
-async fn success_with_unparseable_body_is_unknown_count() {
+async fn success_ignores_body_shape() {
+    // Any 2xx validates the token regardless of body — the probe never parses it.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/accounts/list"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"unexpected":true}"#))
+        .respond_with(ResponseTemplate::new(200).set_body_string("anything at all, not even XML"))
         .mount(&server)
         .await;
 
@@ -118,7 +120,7 @@ async fn success_with_unparseable_body_is_unknown_count() {
     let clock = FixedClock::new(1_700_000_000);
     let nonces = CounterNonceSource::new();
 
-    let count = probe::validate(
+    probe::validate(
         &client,
         &config,
         &authed,
@@ -127,6 +129,5 @@ async fn success_with_unparseable_body_is_unknown_count() {
         &nonces,
     )
     .await
-    .expect("a 2xx with an unexpected body is still a validated token");
-    assert_eq!(count, None, "unparseable 2xx body yields an unknown count");
+    .expect("a 2xx validates the token regardless of body shape");
 }

@@ -43,14 +43,14 @@ async fn recorded_authorization(server: &MockServer, req_path: &str) -> String {
 async fn three_leg_flow_signs_each_leg_with_distinct_nonces() {
     let server = MockServer::start().await;
 
-    Mock::given(method("POST"))
+    Mock::given(method("GET"))
         .and(path("/oauth/request_token"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
             "oauth_token=reqtok&oauth_token_secret=reqsec&oauth_callback_confirmed=true",
         ))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
+    Mock::given(method("GET"))
         .and(path("/oauth/access_token"))
         .respond_with(
             ResponseTemplate::new(200)
@@ -116,7 +116,7 @@ async fn three_leg_flow_signs_each_leg_with_distinct_nonces() {
 #[tokio::test]
 async fn empty_verifier_aborts_without_calling_access_token_leg() {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
+    Mock::given(method("GET"))
         .and(path("/oauth/request_token"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
             "oauth_token=reqtok&oauth_token_secret=reqsec&oauth_callback_confirmed=true",

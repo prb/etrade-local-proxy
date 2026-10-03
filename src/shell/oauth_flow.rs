@@ -2,7 +2,7 @@
 //!
 //! Each leg draws a **fresh** `(nonce, timestamp)` from the injected generators
 //! immediately before signing, so no value is reused across legs. The signing
-//! itself is pure (`core::oauth::sign::sign_leg`); only the two POSTs and the
+//! itself is pure (`core::oauth::sign::sign_leg`); only the two GETs and the
 //! stdin prompt are effects. The leg-1 parser logs `oauth_callback_confirmed`
 //! (informational) so the `oauth_callback=oob` assumption is actively confirmed
 //! on the first live run.
@@ -63,7 +63,7 @@ pub async fn run(
     );
 
     let request_token_url = endpoint_url(&host, base_url_override, REQUEST_TOKEN_PATH);
-    let body = post_leg(
+    let body = fetch_leg(
         &client,
         &request_token_url,
         &leg1.authorization_header,
@@ -109,7 +109,7 @@ pub async fn run(
     );
 
     let access_token_url = endpoint_url(&host, base_url_override, ACCESS_TOKEN_PATH);
-    let body = post_leg(
+    let body = fetch_leg(
         &client,
         &access_token_url,
         &leg2.authorization_header,
@@ -135,9 +135,12 @@ fn endpoint_url(host: &UpstreamHost, base_url_override: Option<&str>, path: &str
     }
 }
 
-/// POST one leg with the signed `Authorization` header and return the response
-/// body text. A non-2xx status maps to [`OauthFlowError::UnexpectedStatus`].
-async fn post_leg(
+/// GET one leg with the signed `Authorization` header and return the response
+/// body text. The ETrade OAuth token legs are GET requests (all OAuth
+/// parameters ride in the `Authorization` header; there is no body), which is
+/// also what the signature base string is computed over (`HttpMethod::Get`).
+/// A non-2xx status maps to [`OauthFlowError::UnexpectedStatus`].
+async fn fetch_leg(
     client: &Client,
     url: &str,
     authorization: &str,
@@ -145,7 +148,7 @@ async fn post_leg(
     callback_hint: &'static str,
 ) -> Result<String, OauthFlowError> {
     let response = client
-        .post(url)
+        .get(url)
         .header(reqwest::header::AUTHORIZATION, authorization)
         .send()
         .await?;
@@ -214,7 +217,7 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
+        Mock::given(method("GET"))
             .and(path("/oauth/request_token"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 "oauth_token=reqtok&oauth_token_secret=reqsec&oauth_callback_confirmed=true",
@@ -242,14 +245,14 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
+        Mock::given(method("GET"))
             .and(path("/oauth/request_token"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 "oauth_token=reqtok&oauth_token_secret=reqsec&oauth_callback_confirmed=true",
             ))
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
+        Mock::given(method("GET"))
             .and(path("/oauth/access_token"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -279,7 +282,7 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
+        Mock::given(method("GET"))
             .and(path("/oauth/request_token"))
             .respond_with(ResponseTemplate::new(401).set_body_string("nope"))
             .mount(&server)

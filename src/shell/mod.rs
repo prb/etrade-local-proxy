@@ -1,8 +1,6 @@
 //! Imperative shell: owns all effects (async runtime, TLS, HTTP server/client,
-//! stdin/stdout prompts, environment reads, system clock and RNG).
-//!
-//! These modules are implemented in FEAT-002. For FEAT-001 they are doc stubs
-//! so the crate compiles while the pure core is built and tested.
+//! stdin/stdout prompts, environment reads, system clock and RNG). Every
+//! decision is delegated to the pure core; this layer only performs effects.
 
 pub mod clock_nonce;
 pub mod env;

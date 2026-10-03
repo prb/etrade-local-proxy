@@ -45,3 +45,6 @@ proptest = "1.8"
 insta = { version = "1.44", features = ["json"] }
 wiremock = "0.6"
 tokio = { version = "1.48", features = ["rt", "macros", "test-util"] }
+# Drives the axum router in-process (`ServiceExt::oneshot`) for the shell
+# integration tests without binding a socket.
+tower = { version = "0.5", features = ["util"] }

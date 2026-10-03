@@ -14,7 +14,7 @@ use etrade_local_proxy::core::config::build_config;
 use etrade_local_proxy::core::env::Environment;
 use etrade_local_proxy::core::newtypes::ListenPort;
 use etrade_local_proxy::shell::clock_nonce::{Clock, NonceSource, RandomNonceSource, SystemClock};
-use etrade_local_proxy::shell::{env, oauth_flow, prompt, server, state, tls};
+use etrade_local_proxy::shell::{env, oauth_flow, probe, prompt, server, state, tls};
 
 /// Local HTTPS read-only reverse proxy for the ETrade API.
 #[derive(Debug, Parser)]
@@ -78,6 +78,31 @@ async fn run() -> anyhow::Result<()> {
     )
     .await
     .context("OAuth authorization flow failed")?;
+
+    // Validate the freshly minted token with one signed lightweight read before
+    // serving. On any non-2xx or transport error this returns an error that
+    // `?`/`.context` propagate to `main`, which exits non-zero WITHOUT serving.
+    let client = reqwest::Client::new();
+    let account_count = probe::validate(
+        &client,
+        &config,
+        &authorized,
+        None,
+        clock.as_ref(),
+        nonces.as_ref(),
+    )
+    .await
+    .context("authorization validation failed")?;
+    match account_count {
+        Some(n) => {
+            eprintln!("info: authorization validated via GET /v1/accounts/list \u{2014} {n} accounts");
+        }
+        None => {
+            eprintln!(
+                "info: authorization validated via GET /v1/accounts/list \u{2014} account count unknown"
+            );
+        }
+    }
 
     // Store the token and serve.
     let auth = state::ready(authorized);

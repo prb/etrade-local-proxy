@@ -85,6 +85,24 @@ pub enum ProxyError {
     NotReady,
 }
 
+/// Startup authorization-validation probe errors. Fatal at startup: a proxy
+/// that cannot make a validated API call fails fast rather than serving. No
+/// token material appears in any message.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ProbeError {
+    /// The signed probe request failed at the transport layer or exceeded the
+    /// relay body cap. Wraps the shared signed-GET failure.
+    #[error("authorization validation probe failed")]
+    Transport(#[from] ProxyError),
+    /// The probe reached the upstream but it returned a non-2xx status, so the
+    /// token is not validated. Carries the status code.
+    #[error(
+        "authorization validation probe GET /v1/accounts/list returned HTTP {code}"
+    )]
+    NonSuccessStatus { code: u16 },
+}
+
 /// Server bind/TLS errors. Fatal at startup.
 #[derive(Debug, Error)]
 #[non_exhaustive]

@@ -7,6 +7,7 @@ pub mod env;
 pub mod error;
 pub mod handlers;
 pub mod oauth_flow;
+pub mod probe;
 pub mod prompt;
 pub mod server;
 pub mod state;

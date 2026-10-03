@@ -35,12 +35,42 @@ pub struct RelayedResponse {
 
 /// Forward one admitted `GET` request upstream and buffer the response.
 ///
-/// `mapped_path` is the upstream path+query produced by `admit` (e.g.
+/// Thin delegator over [`signed_get`]: the proxy handler's forward path and the
+/// startup probe share the exact same signing/send/relay machinery. `admit`
+/// produces `mapped_path` (e.g. `/v1/accounts/list?x=1`).
+pub async fn forward(
+    client: &Client,
+    config: &Config,
+    authorized: &Authorized,
+    mapped_path: &str,
+    base_url_override: Option<&str>,
+    clock: &(dyn Clock + Send + Sync),
+    nonces: &(dyn NonceSource + Send + Sync),
+) -> Result<RelayedResponse, ProxyError> {
+    signed_get(
+        client,
+        config,
+        authorized,
+        mapped_path,
+        base_url_override,
+        clock,
+        nonces,
+    )
+    .await
+}
+
+/// Sign and send one resource-leg `GET` for a given mapped path, buffering the
+/// response with a hard size cap.
+///
+/// This is the shared signed-GET machinery used by BOTH the per-request proxy
+/// handler ([`forward`]) and the startup authorization probe
+/// ([`crate::shell::probe`]), so there is exactly one place that signs a
+/// resource request. `mapped_path` is the upstream path+query (e.g.
 /// `/v1/accounts/list?x=1`). `base_url_override` points the request at a local
 /// fake in tests (replacing the `https://api.etrade.com` host); production
 /// passes `None`. A fresh `(nonce, timestamp)` is drawn here, immediately
-/// before signing, so every proxied request signs with a distinct nonce.
-pub async fn forward(
+/// before signing, so every call signs with a distinct nonce.
+pub async fn signed_get(
     client: &Client,
     config: &Config,
     authorized: &Authorized,

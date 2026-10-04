@@ -35,8 +35,11 @@ with a single `GET /v1/accounts/list` before serving. It binds only to
 curl -k https://127.0.0.1:8443/internal/status
 # -> {"authorized":true}
 
-# a proxied read call
+# a proxied read call (ETrade returns XML by default)
 curl -k https://127.0.0.1:8443/etrade-api/v1/accounts/list
+
+# the Accept header is passed through, so you can ask ETrade for JSON
+curl -k -H "Accept: application/json" https://127.0.0.1:8443/etrade-api/v1/accounts/list
 
 # writes are structurally rejected (verb-level, never forwarded upstream)
 curl -k -X POST https://127.0.0.1:8443/etrade-api/v1/accounts/list -i

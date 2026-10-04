@@ -27,6 +27,31 @@ pub trait NonceSource {
     fn next(&self) -> Nonce;
 }
 
+/// The two injected non-determinism sources that always travel together when
+/// signing: a clock and a nonce source. Bundling them keeps the "draw a fresh
+/// `(nonce, timestamp)` immediately before signing" contract in one borrowed
+/// value instead of threading two parameters through every signing call.
+#[derive(Clone, Copy)]
+pub struct Signer<'a> {
+    pub clock: &'a (dyn Clock + Send + Sync),
+    pub nonces: &'a (dyn NonceSource + Send + Sync),
+}
+
+impl<'a> Signer<'a> {
+    /// Bundle a clock and a nonce source for one signing call site.
+    pub fn new(
+        clock: &'a (dyn Clock + Send + Sync),
+        nonces: &'a (dyn NonceSource + Send + Sync),
+    ) -> Self {
+        Self { clock, nonces }
+    }
+
+    /// Draw a fresh `(timestamp, nonce)` pair, immediately before signing.
+    pub fn fresh(&self) -> (Timestamp, Nonce) {
+        (self.clock.now_unix(), self.nonces.next())
+    }
+}
+
 /// The real system clock.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemClock;

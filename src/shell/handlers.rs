@@ -13,7 +13,7 @@ use reqwest::Client;
 use crate::core::admission::{admit, Admission, RejectReason};
 use crate::core::config::Config;
 use crate::core::oauth::HttpMethod;
-use crate::shell::clock_nonce::{Clock, NonceSource};
+use crate::shell::clock_nonce::{Clock, NonceSource, Signer};
 use crate::shell::error::ProxyError;
 use crate::shell::state::{self, SharedState};
 use crate::shell::upstream::{self, RelayedResponse};
@@ -57,11 +57,18 @@ pub async fn handle(State(app): State<AppState>, request: Request) -> Response {
         .map(|pq| pq.as_str())
         .unwrap_or("")
         .to_string();
+    // Capture the client's Accept header (if any valid UTF-8) to forward
+    // upstream, so a client can request ETrade's JSON representation.
+    let accept = request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
 
     match admit(&method, &path_and_query) {
         Admission::Status => status_response(&app.auth),
         Admission::Forward(upstream_path) => {
-            forward_response(&app, upstream_path.as_str()).await
+            forward_response(&app, upstream_path.as_str(), accept.as_deref()).await
         }
         Admission::Reject(RejectReason::MethodNotGet) => {
             StatusCode::METHOD_NOT_ALLOWED.into_response()
@@ -84,19 +91,21 @@ fn status_response(auth: &SharedState) -> Response {
 }
 
 /// Forward an admitted request upstream, or 503 if not yet authorized.
-async fn forward_response(app: &AppState, mapped_path: &str) -> Response {
+/// `accept` is the client's `Accept` header, forwarded verbatim when present.
+async fn forward_response(app: &AppState, mapped_path: &str, accept: Option<&str>) -> Response {
     let Some(authorized) = state::authorized_handle(&app.auth) else {
         return proxy_error_response(&ProxyError::NotReady);
     };
 
+    let signer = Signer::new(app.clock.as_ref(), app.nonces.as_ref());
     let result = upstream::forward(
         &app.client,
         &app.config,
         &authorized,
         mapped_path,
+        accept,
         app.upstream_base.as_deref(),
-        app.clock.as_ref(),
-        app.nonces.as_ref(),
+        signer,
     )
     .await;
 

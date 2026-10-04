@@ -17,7 +17,7 @@ use crate::core::oauth::sign::sign_leg;
 use crate::core::oauth::{split_query, wire_query};
 use crate::core::relay::relay_header_allowed;
 use crate::core::status::Authorized;
-use crate::shell::clock_nonce::{Clock, NonceSource};
+use crate::shell::clock_nonce::Signer;
 use crate::shell::error::ProxyError;
 
 /// Hard cap on the upstream response body (8 MiB). A misbehaving or compromised
@@ -37,24 +37,27 @@ pub struct RelayedResponse {
 ///
 /// Thin delegator over [`signed_get`]: the proxy handler's forward path and the
 /// startup probe share the exact same signing/send/relay machinery. `admit`
-/// produces `mapped_path` (e.g. `/v1/accounts/list?x=1`).
+/// produces `mapped_path` (e.g. `/v1/accounts/list?x=1`). `accept` carries the
+/// client's `Accept` header through to the upstream (e.g.
+/// `application/json`) so callers can select ETrade's JSON representation;
+/// `None` sends no `Accept` and ETrade returns its default (XML).
 pub async fn forward(
     client: &Client,
     config: &Config,
     authorized: &Authorized,
     mapped_path: &str,
+    accept: Option<&str>,
     base_url_override: Option<&str>,
-    clock: &(dyn Clock + Send + Sync),
-    nonces: &(dyn NonceSource + Send + Sync),
+    signer: Signer<'_>,
 ) -> Result<RelayedResponse, ProxyError> {
     signed_get(
         client,
         config,
         authorized,
         mapped_path,
+        accept,
         base_url_override,
-        clock,
-        nonces,
+        signer,
     )
     .await
 }
@@ -66,18 +69,22 @@ pub async fn forward(
 /// handler ([`forward`]) and the startup authorization probe
 /// ([`crate::shell::probe`]), so there is exactly one place that signs a
 /// resource request. `mapped_path` is the upstream path+query (e.g.
-/// `/v1/accounts/list?x=1`). `base_url_override` points the request at a local
-/// fake in tests (replacing the `https://api.etrade.com` host); production
-/// passes `None`. A fresh `(nonce, timestamp)` is drawn here, immediately
-/// before signing, so every call signs with a distinct nonce.
+/// `/v1/accounts/list?x=1`). `accept`, when present, is forwarded verbatim as
+/// the upstream `Accept` header so a client can request ETrade's JSON
+/// representation; `None` omits it. The `Accept` header is not part of the
+/// OAuth 1.0a signature base string, so forwarding it does not affect signing.
+/// `base_url_override` points the request at a local fake in tests (replacing
+/// the `https://api.etrade.com` host); production passes `None`. A fresh
+/// `(nonce, timestamp)` is drawn here, immediately before signing, so every
+/// call signs with a distinct nonce.
 pub async fn signed_get(
     client: &Client,
     config: &Config,
     authorized: &Authorized,
     mapped_path: &str,
+    accept: Option<&str>,
     base_url_override: Option<&str>,
-    clock: &(dyn Clock + Send + Sync),
-    nonces: &(dyn NonceSource + Send + Sync),
+    signer: Signer<'_>,
 ) -> Result<RelayedResponse, ProxyError> {
     // Split the query off the mapped path; the pure core decodes and filters.
     let (path, query_params) = split_query(mapped_path);
@@ -88,8 +95,7 @@ pub async fn signed_get(
     let host = config.environment().host();
 
     // Fresh nonce/timestamp immediately before signing.
-    let ts = clock.now_unix();
-    let nonce = nonces.next();
+    let (ts, nonce) = signer.fresh();
     let signed = sign_leg(
         &host,
         &SigningInput::Resource {
@@ -109,11 +115,15 @@ pub async fn signed_get(
     let wire = wire_query(&query_params);
     let url = build_url(&host, base_url_override, &path, &wire);
 
-    let response = client
+    let mut request = client
         .get(&url)
-        .header(reqwest::header::AUTHORIZATION, &signed.authorization_header)
-        .send()
-        .await?;
+        .header(reqwest::header::AUTHORIZATION, &signed.authorization_header);
+    // Forward the client's Accept verbatim so it can select ETrade's JSON
+    // representation. Not part of the OAuth signature base string.
+    if let Some(accept) = accept {
+        request = request.header(reqwest::header::ACCEPT, accept);
+    }
+    let response = request.send().await?;
 
     let status = response.status().as_u16();
     let headers = response
@@ -241,9 +251,9 @@ mod tests {
             &config,
             &authed,
             "/v1/accounts/list?x=1",
+            None,
             Some(&server.uri()),
-            &clock,
-            &nonces,
+            Signer::new(&clock, &nonces),
         )
         .await
         .expect("forward succeeds");
@@ -285,14 +295,90 @@ mod tests {
             &config,
             &authed,
             "/v1/accounts/big",
+            None,
             Some(&server.uri()),
-            &clock,
-            &nonces,
+            Signer::new(&clock, &nonces),
         )
         .await;
         assert!(matches!(
             result,
             Err(ProxyError::UpstreamTooLarge { cap }) if cap == UPSTREAM_BODY_CAP
         ));
+    }
+
+    #[tokio::test]
+    async fn accept_header_is_forwarded_upstream() {
+        use wiremock::matchers::header as match_header;
+
+        let server = MockServer::start().await;
+        // The mock only matches when the upstream request carries the Accept
+        // header the client sent, proving passthrough.
+        Mock::given(method("GET"))
+            .and(path("/v1/accounts/list"))
+            .and(match_header("accept", "application/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let config = config();
+        let authed = authorized();
+        let clock = FixedClock::new(1_700_000_000);
+        let nonces = CounterNonceSource::new();
+        let relayed = forward(
+            &client,
+            &config,
+            &authed,
+            "/v1/accounts/list",
+            Some("application/json"),
+            Some(&server.uri()),
+            Signer::new(&clock, &nonces),
+        )
+        .await
+        .expect("forward with Accept succeeds");
+        assert_eq!(relayed.status, 200);
+    }
+
+    #[tokio::test]
+    async fn no_accept_header_sends_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/accounts/list"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<xml/>"))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let config = config();
+        let authed = authorized();
+        let clock = FixedClock::new(1_700_000_000);
+        let nonces = CounterNonceSource::new();
+        let relayed = forward(
+            &client,
+            &config,
+            &authed,
+            "/v1/accounts/list",
+            None,
+            Some(&server.uri()),
+            Signer::new(&clock, &nonces),
+        )
+        .await
+        .expect("forward without Accept succeeds");
+        assert_eq!(relayed.status, 200);
+
+        // With `accept = None` the proxy does not forward a client-chosen
+        // Accept. (reqwest still sets its own default `*/*`; what matters is we
+        // did not inject `application/json`.)
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let sent_accept = requests[0]
+            .headers
+            .get("accept")
+            .map(|v| v.to_str().unwrap().to_string());
+        assert_ne!(
+            sent_accept.as_deref(),
+            Some("application/json"),
+            "no client Accept should be forwarded when accept is None"
+        );
     }
 }

@@ -13,7 +13,9 @@ use clap::Parser;
 use etrade_local_proxy::core::config::build_config;
 use etrade_local_proxy::core::env::Environment;
 use etrade_local_proxy::core::newtypes::ListenPort;
-use etrade_local_proxy::shell::clock_nonce::{Clock, NonceSource, RandomNonceSource, SystemClock};
+use etrade_local_proxy::shell::clock_nonce::{
+    Clock, NonceSource, RandomNonceSource, Signer, SystemClock,
+};
 use etrade_local_proxy::shell::{env, oauth_flow, probe, prompt, server, state, tls};
 
 /// Local HTTPS read-only reverse proxy for the ETrade API.
@@ -88,8 +90,7 @@ async fn run() -> anyhow::Result<()> {
         &config,
         &authorized,
         None,
-        clock.as_ref(),
-        nonces.as_ref(),
+        Signer::new(clock.as_ref(), nonces.as_ref()),
     )
     .await
     .context("authorization validation failed")?;

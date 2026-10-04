@@ -17,7 +17,7 @@ use common::test_config;
 
 use etrade_local_proxy::core::newtypes::{AccessToken, TokenSecret};
 use etrade_local_proxy::core::status::Unauthorized;
-use etrade_local_proxy::shell::clock_nonce::{CounterNonceSource, FixedClock};
+use etrade_local_proxy::shell::clock_nonce::{CounterNonceSource, FixedClock, Signer};
 use etrade_local_proxy::shell::error::ProbeError;
 use etrade_local_proxy::shell::probe;
 
@@ -52,8 +52,7 @@ async fn success_validates_and_signs_request() {
         &config,
         &authed,
         Some(&server.uri()),
-        &clock,
-        &nonces,
+        Signer::new(&clock, &nonces),
     )
     .await
     .expect("a 200 response validates the token");
@@ -93,8 +92,7 @@ async fn non_success_status_fails_fast() {
         &config,
         &authed,
         Some(&server.uri()),
-        &clock,
-        &nonces,
+        Signer::new(&clock, &nonces),
     )
     .await;
 
@@ -125,8 +123,7 @@ async fn success_ignores_body_shape() {
         &config,
         &authed,
         Some(&server.uri()),
-        &clock,
-        &nonces,
+        Signer::new(&clock, &nonces),
     )
     .await
     .expect("a 2xx validates the token regardless of body shape");

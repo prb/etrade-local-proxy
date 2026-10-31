@@ -14,6 +14,7 @@
 mod common;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use common::{oauth_param, test_config};
 
@@ -23,6 +24,7 @@ use axum::http::{Request, StatusCode};
 use etrade_local_proxy::core::newtypes::{AccessToken, TokenSecret};
 use etrade_local_proxy::core::status::Unauthorized;
 use etrade_local_proxy::shell::clock_nonce::{Clock, CounterNonceSource, FixedClock, NonceSource};
+use etrade_local_proxy::shell::http::{http_client, http_client_with};
 use etrade_local_proxy::shell::server::{app_state, router};
 use etrade_local_proxy::shell::state;
 
@@ -37,12 +39,51 @@ fn ready_router(
     clock: Arc<dyn Clock + Send + Sync>,
     nonces: Arc<dyn NonceSource + Send + Sync>,
 ) -> axum::Router {
+    let client = http_client().expect("build client");
+    ready_router_with(upstream_base, clock, nonces, client)
+}
+
+/// Like [`ready_router`] but with a caller-supplied outbound client.
+fn ready_router_with(
+    upstream_base: String,
+    clock: Arc<dyn Clock + Send + Sync>,
+    nonces: Arc<dyn NonceSource + Send + Sync>,
+    client: reqwest::Client,
+) -> axum::Router {
     let config = Arc::new(test_config());
     let authorized =
         Unauthorized.authorize(AccessToken::new("acctok"), TokenSecret::new("accsec"));
     let auth = state::ready(authorized);
-    let app_state = app_state(config, auth, clock, nonces, Some(upstream_base));
-    router(app_state)
+    router(app_state(config, auth, clock, nonces, client, Some(upstream_base)))
+}
+
+#[tokio::test]
+async fn hung_upstream_returns_504_instead_of_hanging() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/accounts/list"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+        .mount(&server)
+        .await;
+    let clock: Arc<dyn Clock + Send + Sync> = Arc::new(FixedClock::new(1_700_000_000));
+    let nonces: Arc<dyn NonceSource + Send + Sync> = Arc::new(CounterNonceSource::new());
+    let client = http_client_with(Duration::from_millis(100), Duration::from_millis(150))
+        .expect("build client");
+    let app = ready_router_with(server.uri(), clock, nonces, client);
+
+    let started = std::time::Instant::now();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/etrade-api/v1/accounts/list")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert!(started.elapsed() < Duration::from_secs(3), "must not hang");
 }
 
 #[tokio::test]

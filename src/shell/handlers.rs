@@ -136,9 +136,11 @@ fn relay_to_response(relayed: RelayedResponse) -> Response {
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
 }
 
-/// Map a [`ProxyError`] to its HTTP status (502/502/503).
+/// Map a [`ProxyError`] to its HTTP status: an upstream timeout is 504, other
+/// upstream failures and over-cap bodies are 502, not-ready is 503.
 fn proxy_error_response(err: &ProxyError) -> Response {
     let status = match err {
+        ProxyError::Upstream(e) if e.is_timeout() => StatusCode::GATEWAY_TIMEOUT,
         ProxyError::Upstream(_) | ProxyError::UpstreamTooLarge { .. } => StatusCode::BAD_GATEWAY,
         ProxyError::NotReady => StatusCode::SERVICE_UNAVAILABLE,
     };

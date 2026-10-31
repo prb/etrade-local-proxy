@@ -20,6 +20,7 @@ use crate::core::oauth::sign::sign_leg;
 use crate::core::status::{Authorized, Unauthorized};
 use crate::shell::clock_nonce::{Clock, NonceSource};
 use crate::shell::error::OauthFlowError;
+use crate::shell::http::http_client;
 
 /// The callback token sent on the request-token leg (out-of-band: no redirect).
 const CALLBACK_OOB: &str = "oob";
@@ -41,7 +42,8 @@ pub async fn run(
     nonces: &dyn NonceSource,
     verifier_prompt: impl FnOnce(&str) -> Result<Verifier, OauthFlowError>,
 ) -> Result<Authorized, OauthFlowError> {
-    let client = Client::new();
+    // Bounded timeouts: a timeout surfaces as `OauthFlowError::Http`.
+    let client = http_client()?;
 
     // The selected environment's upstream host, threaded as data into both
     // signing and URL construction so signing matches sending.

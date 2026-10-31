@@ -18,6 +18,7 @@ use crate::core::newtypes::ListenPort;
 use crate::shell::clock_nonce::{Clock, NonceSource};
 use crate::shell::error::ServerError;
 use crate::shell::handlers::{self, AppState};
+use crate::shell::http::http_client;
 use crate::shell::state::SharedState;
 
 /// The loopback socket address for a given port. The IP is the hard-coded
@@ -40,6 +41,7 @@ pub fn app_state(
     auth: SharedState,
     clock: Arc<dyn Clock + Send + Sync>,
     nonces: Arc<dyn NonceSource + Send + Sync>,
+    client: Client,
     upstream_base: Option<String>,
 ) -> AppState {
     AppState {
@@ -47,7 +49,7 @@ pub fn app_state(
         auth,
         clock,
         nonces,
-        client: Client::new(),
+        client,
         upstream_base,
     }
 }
@@ -67,7 +69,8 @@ pub async fn serve(
 ) -> Result<(), ServerError> {
     let addr = bind_addr(port);
     let tls = RustlsConfig::from_config(server_config);
-    let state = app_state(config, auth, clock, nonces, None);
+    let client = http_client().map_err(ServerError::HttpClient)?;
+    let state = app_state(config, auth, clock, nonces, client, None);
     let app = router(state);
 
     axum_server::bind_rustls(addr, tls)

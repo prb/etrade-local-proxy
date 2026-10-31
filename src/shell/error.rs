@@ -69,12 +69,13 @@ impl OauthFlowError {
 }
 
 /// Per-request proxy errors, each mapped to a single HTTP status by the handler
-/// (`Upstream`/`UpstreamTooLarge` → 502, `NotReady` → 503). Recoverable: the
+/// (`Upstream` → 502, or 504 on timeout; `UpstreamTooLarge` → 502; `NotReady` → 503). Recoverable: the
 /// process keeps running.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ProxyError {
-    /// The outbound request to ETrade failed (send or read). Maps to 502.
+    /// The outbound request to ETrade failed (send or read). Maps to 502,
+    /// or 504 when the underlying error is a timeout.
     #[error("upstream request failed")]
     Upstream(#[from] reqwest::Error),
     /// The upstream body exceeded the hard cap. Maps to 502.
@@ -113,4 +114,23 @@ pub enum ServerError {
     /// TLS setup failed.
     #[error("TLS setup failed")]
     Tls(#[from] TlsError),
+    /// Building the outbound HTTP client failed.
+    #[error("failed to build the outbound HTTP client")]
+    HttpClient(#[source] reqwest::Error),
+}
+
+/// Terminal keep-alive failure. The keep-alive task only ever ends with this:
+/// the token was rejected, so the proxy must stop and be restarted to
+/// re-authorize. No token material appears in the message.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum KeepAliveError {
+    /// ETrade rejected the access token (HTTP 401/403), e.g. the midnight US
+    /// Eastern hard expiry or a revocation.
+    #[error(
+        "keep-alive GET /v1/accounts/list returned HTTP {code}: the ETrade \
+         access token has expired or was revoked; restart the proxy to \
+         re-authorize"
+    )]
+    TokenRejected { code: u16 },
 }

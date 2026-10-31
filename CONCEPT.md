@@ -26,6 +26,14 @@ Startup authorization validation:
 - On success (HTTP 2xx), the proxy logs a terse console confirmation (e.g. `info: authorization validated via GET /v1/accounts/list (HTTP 200)`). The 2xx status is the entire authorization signal; the response body (which ETrade returns as XML) is not parsed, and no account data is logged.
 - On failure (non-2xx response or network error), the proxy fails fast: it logs the failure and exits with an error rather than coming up. A proxy that cannot make a validated API call is worse than one that reports the problem immediately; there is no point keeping a non-working connection alive.
 
+Keep-alive:
+- ETrade access tokens go inactive after roughly 2 hours idle. After the server is up, a background task makes the same signed `GET /v1/accounts/list` call as the startup probe every 30 minutes (a shell constant; no CLI flag) to reset the idle timer. The first call fires one interval after startup. Each call draws its own fresh nonce/timestamp. It is an internal outbound call, not a proxy route, and does not change `/internal/status` or the GET-only surface.
+- Keep-alive resets the idle timeout only. It cannot and does not try to extend the hard token expiry at midnight US Eastern; after that the proxy must be restarted to re-authorize.
+- A pure core classifier maps each result to an action. 2xx: log `info: keep-alive OK (HTTP 200)`. HTTP 401/403 (token expired or revoked): fatal; the proxy logs that the token expired and to restart to re-authorize, then exits non-zero (consistent with fail-fast). Any other failure (transport error, 5xx, other non-2xx): transient; log a `warn:` line and retry at the next interval. Only status codes are logged, never account data.
+- Termination: `main` selects on the server future and the keep-alive future; the keep-alive future ends only with a fatal error, which propagates through `anyhow` to a non-zero exit (no `process::exit` in the shell).
+Outbound timeouts:
+- Every outbound HTTP client is built by one shell constructor (`shell::http`) with a 10s connect timeout and a 30s overall request timeout (covering connect, send, and reading the full body), so a hung or half-open connection cannot block forever.
+- Keep-alive treats a timeout as a transient transport failure (`warn:` line, retry next interval). The startup probe and the OAuth flow fail on timeout like any transport error. The proxy forward path returns `504 Gateway Timeout` for an upstream timeout (other upstream failures remain `502`).
 Status endpoint:
 
 - The local proxy should support a `/internal/status` endpoint that returns a JSON document.  The document should contain `{"authorized":true}` or `{"authorized":false}` depending on whether the authorization workflow has been completed.  (Clients of the proxy will use this to determine whether to make calls against the API.)

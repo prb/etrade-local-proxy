@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Async runtime (shell): current_thread flavor used by main.
-tokio = { version = "1.48", features = ["rt", "macros", "io-std", "io-util"] }
+tokio = { version = "1.48", features = ["rt", "macros", "io-std", "io-util", "time"] }
 # HTTP server + client (shell).
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }

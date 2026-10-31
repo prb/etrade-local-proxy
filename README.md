@@ -30,6 +30,11 @@ open in a browser, then prompts for the verifier code — and validates the toke
 with a single `GET /v1/accounts/list` before serving. It binds only to
 `127.0.0.1`.
 
+While running, it sends a signed `GET /v1/accounts/list` every 30 minutes to keep
+the token from going idle (~2h). This cannot extend ETrade's hard token expiry
+at midnight US Eastern; after that the proxy exits with an error and must be
+restarted to re-authorize.
+
 ```sh
 # readiness signal for clients
 curl -k https://127.0.0.1:8443/internal/status

@@ -16,7 +16,7 @@ use etrade_local_proxy::core::newtypes::ListenPort;
 use etrade_local_proxy::shell::clock_nonce::{
     Clock, NonceSource, RandomNonceSource, Signer, SystemClock,
 };
-use etrade_local_proxy::shell::{env, oauth_flow, probe, prompt, server, state, tls};
+use etrade_local_proxy::shell::{env, http, keepalive, oauth_flow, probe, prompt, server, state, tls};
 
 /// Local HTTPS read-only reverse proxy for the ETrade API.
 #[derive(Debug, Parser)]
@@ -84,7 +84,9 @@ async fn run() -> anyhow::Result<()> {
     // Validate the freshly minted token with one signed lightweight read before
     // serving. On any non-2xx or transport error this returns an error that
     // `?`/`.context` propagate to `main`, which exits non-zero WITHOUT serving.
-    let client = reqwest::Client::new();
+    // Bounded timeouts: a hung probe fails startup; a hung keep-alive call is
+    // a transient failure rather than a stalled loop.
+    let client = http::http_client().context("failed to build HTTP client")?;
     probe::validate(
         &client,
         &config,
@@ -96,12 +98,33 @@ async fn run() -> anyhow::Result<()> {
     .context("authorization validation failed")?;
     eprintln!("info: authorization validated via GET /v1/accounts/list (HTTP 200)");
 
-    // Store the token and serve.
+    // Store the token and serve. The keep-alive task shares the same token
+    // handle and runs alongside the server; whichever future ends first ends
+    // the process. A fatal keep-alive (401/403) becomes an error here, so the
+    // exit is non-zero without calling `process::exit` from the shell.
     let auth = state::ready(authorized);
-
-    server::serve(port, tls.server_config, config, auth, clock, nonces)
-        .await
-        .context("server failed")?;
-
+    let handle = state::authorized_handle(&auth)
+        .context("authorized token missing immediately after authorization")?;
+    let keepalive_signer = Signer::new(clock.as_ref(), nonces.as_ref());
+    let serving = server::serve(
+        port,
+        tls.server_config,
+        config.clone(),
+        auth,
+        clock.clone(),
+        nonces.clone(),
+    );
+    let keeping_alive = keepalive::run(
+        &client,
+        &config,
+        &handle,
+        None,
+        keepalive_signer,
+        keepalive::DEFAULT_INTERVAL,
+    );
+    tokio::select! {
+        served = serving => served.context("server failed")?,
+        fatal = keeping_alive => return Err(anyhow::Error::new(fatal).context("keep-alive failed")),
+    }
     Ok(())
 }

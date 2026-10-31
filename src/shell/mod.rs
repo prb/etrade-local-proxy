@@ -6,6 +6,8 @@ pub mod clock_nonce;
 pub mod env;
 pub mod error;
 pub mod handlers;
+pub mod http;
+pub mod keepalive;
 pub mod oauth_flow;
 pub mod probe;
 pub mod prompt;

@@ -10,8 +10,8 @@ use etrade_local_proxy::core::status::{Authorized, Unauthorized};
 use etrade_local_proxy::shell::clock_nonce::{CounterNonceSource, FixedClock, Signer};
 use etrade_local_proxy::shell::error::{KeepAliveError, ProbeError, ProxyError};
 use etrade_local_proxy::shell::http::http_client_with;
-use etrade_local_proxy::shell::probe;
 use etrade_local_proxy::shell::keepalive;
+use etrade_local_proxy::shell::probe;
 use reqwest::Client;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -230,4 +230,168 @@ async fn timed_out_tick_is_transient_and_loop_recovers() {
     .await;
     assert!(ended.is_err(), "a timeout must not end the task");
     assert!(server.received_requests().await.expect("recorded").len() >= 3);
+}
+
+// ---- log content ----------------------------------------------------------
+
+use std::sync::{Arc, Mutex};
+
+/// Run the loop with a captured log sink for `window`, returning the lines.
+async fn captured(
+    client: &Client,
+    base: &str,
+    interval: Duration,
+    window: Duration,
+) -> (Vec<String>, Option<KeepAliveError>) {
+    let (config, authed) = (test_config(), authorized());
+    let (clock, nonces) = (FixedClock::new(1_700_000_000), CounterNonceSource::new());
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = lines.clone();
+    let result = tokio::time::timeout(
+        window,
+        keepalive::run_with_log(
+            client,
+            &config,
+            &authed,
+            Some(base),
+            Signer::new(&clock, &nonces),
+            interval,
+            move |l| sink.lock().expect("lock").push(l.to_owned()),
+        ),
+    )
+    .await
+    .ok();
+    let out = lines.lock().expect("lock").clone();
+    (out, result)
+}
+
+#[tokio::test]
+async fn startup_schedule_line_precedes_first_wait() {
+    let server = MockServer::start().await;
+    mount(&server, 200).await;
+    let (lines, _) = captured(
+        &Client::new(),
+        &server.uri(),
+        Duration::from_secs(1800),
+        Duration::from_millis(100),
+    )
+    .await;
+    assert_eq!(
+        lines,
+        vec![
+            "info: 2023-11-14T22:13:20Z keep-alive scheduled: GET /v1/accounts/list \
+             every 30m, first run at 2023-11-14T22:43:20Z"
+                .to_owned()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn success_lines_have_status_and_timing() {
+    let server = MockServer::start().await;
+    mount(&server, 200).await;
+    let (lines, _) = captured(
+        &Client::new(),
+        &server.uri(),
+        TICK,
+        Duration::from_millis(200),
+    )
+    .await;
+    let ok = lines
+        .iter()
+        .find(|l| l.contains("keep-alive OK"))
+        .expect("ok line");
+    assert!(ok
+        .starts_with("info: 2023-11-14T22:13:20Z keep-alive OK GET /v1/accounts/list (HTTP 200, "));
+    assert!(ok.ends_with("ms)"));
+}
+
+#[tokio::test]
+async fn http_500_and_timeout_report_distinct_causes_with_counter() {
+    let server = MockServer::start().await;
+    mount(&server, 500).await;
+    let (lines, _) = captured(
+        &Client::new(),
+        &server.uri(),
+        TICK,
+        Duration::from_millis(250),
+    )
+    .await;
+    let warns: Vec<_> = lines.iter().filter(|l| l.starts_with("warn:")).collect();
+    assert!(warns.len() >= 2);
+    assert!(warns[0].contains("got HTTP 500") && warns[0].contains("failure 1 in a row"));
+    assert!(warns[1].contains("failure 2 in a row; will retry in 20ms"));
+
+    let slow = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/accounts/list"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+        .mount(&slow)
+        .await;
+    let (lines, _) = captured(
+        &short_timeout_client(),
+        &slow.uri(),
+        TICK,
+        Duration::from_millis(500),
+    )
+    .await;
+    let warn = lines.iter().find(|l| l.starts_with("warn:")).expect("warn");
+    assert!(warn.contains("failed: timeout"), "{warn}");
+    assert!(!warn.contains("HTTP"), "{warn}");
+    assert!(!warn.contains("http://"), "no URL in logs: {warn}");
+}
+
+#[tokio::test]
+async fn failure_counter_resets_after_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/accounts/list"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/accounts/list"))
+        .respond_with(ResponseTemplate::new(200))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/accounts/list"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    let (lines, _) = captured(
+        &Client::new(),
+        &server.uri(),
+        TICK,
+        Duration::from_millis(400),
+    )
+    .await;
+    let tags: Vec<String> = lines
+        .iter()
+        .skip(1)
+        .take(4)
+        .map(|l| {
+            l.split_once("(failure ")
+                .map_or("ok".to_owned(), |(_, r)| r.chars().take(1).collect())
+        })
+        .collect();
+    assert_eq!(tags, ["1", "2", "ok", "1"], "{lines:?}");
+}
+
+#[tokio::test]
+async fn fatal_logs_summary_and_still_returns_token_rejected() {
+    for code in [401u16, 403] {
+        let server = MockServer::start().await;
+        mount(&server, code).await;
+        let (lines, result) =
+            captured(&Client::new(), &server.uri(), TICK, Duration::from_secs(5)).await;
+        assert!(matches!(result, Some(KeepAliveError::TokenRejected { code: c }) if c == code));
+        let last = lines.last().expect("fatal line");
+        assert!(last.starts_with("error: 2023-11-14T22:13:20Z "));
+        assert!(last.contains(&format!("HTTP {code}")));
+        assert!(last.contains("none since startup"));
+        assert!(last.contains("restart the proxy to re-authorize"));
+    }
 }

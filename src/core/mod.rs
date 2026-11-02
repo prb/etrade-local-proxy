@@ -12,6 +12,7 @@ pub mod config;
 pub mod env;
 pub mod error;
 pub mod keepalive;
+pub mod keepalive_log;
 pub mod newtypes;
 pub mod oauth;
 pub mod relay;

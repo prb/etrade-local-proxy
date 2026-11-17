@@ -18,7 +18,8 @@ export ETRADE_CONSUMER_SECRET="your-consumer-secret"
 ```
 
 Run the proxy (live ETrade by default; add `--sandbox` to target the ETrade
-sandbox, `--port` to change the loopback port, default `8443`):
+sandbox, `--port` to change the loopback port, default `8443`, and
+`--request-timeout-secs` to change the overall upstream timeout, default `30`):
 
 ```sh
 cargo run -- --sandbox
@@ -50,6 +51,35 @@ curl -k -H "Accept: application/json" https://127.0.0.1:8443/etrade-api/v1/accou
 curl -k -X POST https://127.0.0.1:8443/etrade-api/v1/accounts/list -i
 # -> 405
 ```
+
+## Timeouts and errors
+
+The proxy bounds every call to E*TRADE: a **10 s connect timeout** and a
+**30 s overall request timeout** (connect, send, and reading the full response
+body). Change the overall timeout with `--request-timeout-secs`.
+
+Errors the proxy generates itself use the statuses below, with
+`Content-Type: application/json` and a body such as
+`{"error": "upstream_timeout", "timeout_seconds": 30}`:
+
+| Situation | Status | `error` |
+|---|---|---|
+| upstream call timed out | 504 | `upstream_timeout` |
+| other upstream failure (connect error, reset, bad TLS, etc.) | 502 | `upstream_error` |
+| upstream body over the 8 MiB size cap | 502 | `upstream_too_large` |
+| proxy not ready (no token yet) | 503 | `not_ready` |
+
+- `error` always matches `^[a-z][a-z0-9_]{0,39}$`.
+- `timeout_seconds` appears for `upstream_timeout` only and is the overall
+  timeout in effect.
+- Bodies contain fixed strings and numbers only: never the URL, account key,
+  headers, token material, or the upstream response.
+- Replies from E*TRADE itself (for example a `401` or `500`) pass through
+  unchanged.
+
+**Clients should wait longer than the overall timeout (about 40 s by default,
+the proxy's 30 s plus 10 s)** so the proxy's verdict is the one they see. A
+shorter client timeout fails first and looks like a proxy that is down.
 
 ## License
 

@@ -54,7 +54,7 @@ fn ready_router_with(
     let authorized =
         Unauthorized.authorize(AccessToken::new("acctok"), TokenSecret::new("accsec"));
     let auth = state::ready(authorized);
-    router(app_state(config, auth, clock, nonces, client, Some(upstream_base)))
+    router(app_state(config, auth, clock, nonces, client, Some(upstream_base), Duration::from_millis(150)))
 }
 
 #[tokio::test]

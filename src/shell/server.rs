@@ -7,6 +7,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
@@ -18,7 +19,7 @@ use crate::core::newtypes::ListenPort;
 use crate::shell::clock_nonce::{Clock, NonceSource};
 use crate::shell::error::ServerError;
 use crate::shell::handlers::{self, AppState};
-use crate::shell::http::http_client;
+use crate::shell::http::{http_client_with, CONNECT_TIMEOUT};
 use crate::shell::state::SharedState;
 
 /// The loopback socket address for a given port. The IP is the hard-coded
@@ -43,6 +44,7 @@ pub fn app_state(
     nonces: Arc<dyn NonceSource + Send + Sync>,
     client: Client,
     upstream_base: Option<String>,
+    request_timeout: Duration,
 ) -> AppState {
     AppState {
         config,
@@ -51,6 +53,7 @@ pub fn app_state(
         nonces,
         client,
         upstream_base,
+        request_timeout,
     }
 }
 
@@ -66,11 +69,12 @@ pub async fn serve(
     auth: SharedState,
     clock: Arc<dyn Clock + Send + Sync>,
     nonces: Arc<dyn NonceSource + Send + Sync>,
+    request_timeout: Duration,
 ) -> Result<(), ServerError> {
     let addr = bind_addr(port);
     let tls = RustlsConfig::from_config(server_config);
-    let client = http_client().map_err(ServerError::HttpClient)?;
-    let state = app_state(config, auth, clock, nonces, client, None);
+    let client = http_client_with(CONNECT_TIMEOUT, request_timeout).map_err(ServerError::HttpClient)?;
+    let state = app_state(config, auth, clock, nonces, client, None, request_timeout);
     let app = router(state);
 
     axum_server::bind_rustls(addr, tls)

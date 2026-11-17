@@ -6,6 +6,7 @@
 
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
@@ -30,6 +31,11 @@ struct Cli {
     /// environment. Absent = live (api.etrade.com).
     #[arg(long, default_value_t = false)]
     sandbox: bool,
+
+    /// Overall timeout, in seconds, for each proxied upstream request
+    /// (connect, send, and reading the full body). Exceeding it returns 504.
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+    request_timeout_secs: u64,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -113,6 +119,7 @@ async fn run() -> anyhow::Result<()> {
         auth,
         clock.clone(),
         nonces.clone(),
+        Duration::from_secs(cli.request_timeout_secs),
     );
     let keeping_alive = keepalive::run(
         &client,

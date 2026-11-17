@@ -61,6 +61,7 @@ async fn spawn_server(auth: SharedState) -> (u16, tokio::task::JoinHandle<()>) {
             auth,
             clock,
             nonces,
+            std::time::Duration::from_secs(30),
         )
         .await;
     });

@@ -3,6 +3,7 @@
 //! invariant is the one source of truth and no route is pre-matched by method.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -12,6 +13,7 @@ use reqwest::Client;
 
 use crate::core::admission::{admit, Admission, RejectReason};
 use crate::core::config::Config;
+use crate::core::gateway_error::GatewayFailure;
 use crate::core::oauth::HttpMethod;
 use crate::shell::clock_nonce::{Clock, NonceSource, Signer};
 use crate::shell::error::ProxyError;
@@ -29,6 +31,9 @@ pub struct AppState {
     /// Base-URL override for the upstream host (tests point this at a local
     /// fake). `None` uses the real `https://api.etrade.com`.
     pub upstream_base: Option<String>,
+    /// Overall outbound request timeout in effect; reported to clients in the
+    /// `upstream_timeout` body.
+    pub request_timeout: Duration,
 }
 
 /// Map an axum `Method` into the core [`HttpMethod`].
@@ -94,7 +99,7 @@ fn status_response(auth: &SharedState) -> Response {
 /// `accept` is the client's `Accept` header, forwarded verbatim when present.
 async fn forward_response(app: &AppState, mapped_path: &str, accept: Option<&str>) -> Response {
     let Some(authorized) = state::authorized_handle(&app.auth) else {
-        return proxy_error_response(&ProxyError::NotReady);
+        return proxy_error_response(&ProxyError::NotReady, app.request_timeout);
     };
 
     let signer = Signer::new(app.clock.as_ref(), app.nonces.as_ref());
@@ -111,7 +116,7 @@ async fn forward_response(app: &AppState, mapped_path: &str, accept: Option<&str
 
     match result {
         Ok(relayed) => relay_to_response(relayed),
-        Err(err) => proxy_error_response(&err),
+        Err(err) => proxy_error_response(&err, app.request_timeout),
     }
 }
 
@@ -136,15 +141,25 @@ fn relay_to_response(relayed: RelayedResponse) -> Response {
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
 }
 
-/// Map a [`ProxyError`] to its HTTP status: an upstream timeout is 504, other
-/// upstream failures and over-cap bodies are 502, not-ready is 503.
-fn proxy_error_response(err: &ProxyError) -> Response {
-    let status = match err {
-        ProxyError::Upstream(e) if e.is_timeout() => StatusCode::GATEWAY_TIMEOUT,
-        ProxyError::Upstream(_) | ProxyError::UpstreamTooLarge { .. } => StatusCode::BAD_GATEWAY,
-        ProxyError::NotReady => StatusCode::SERVICE_UNAVAILABLE,
-    };
-    status.into_response()
+/// Classify a [`ProxyError`] into the pure [`GatewayFailure`] description.
+fn classify(err: &ProxyError) -> GatewayFailure {
+    match err {
+        ProxyError::Upstream(e) if e.is_timeout() => GatewayFailure::UpstreamTimeout,
+        ProxyError::Upstream(_) => GatewayFailure::UpstreamError,
+        ProxyError::UpstreamTooLarge { .. } => GatewayFailure::UpstreamTooLarge,
+        ProxyError::NotReady => GatewayFailure::NotReady,
+    }
+}
+
+/// Render a [`ProxyError`] as its status plus a fixed-shape JSON body
+/// (`{"error": "...", "timeout_seconds": N}`; the latter for timeouts only).
+fn proxy_error_response(err: &ProxyError, request_timeout: Duration) -> Response {
+    let failure = classify(err);
+    let status = StatusCode::from_u16(failure.status()).unwrap_or(StatusCode::BAD_GATEWAY);
+    // Serializing a struct of a static str and an Option<u64> cannot fail.
+    let json = serde_json::to_string(&failure.body(request_timeout.as_secs()))
+        .expect("gateway error body serializes");
+    (status, [(header::CONTENT_TYPE, "application/json")], json).into_response()
 }
 
 #[cfg(test)]
@@ -159,14 +174,12 @@ mod tests {
     }
 
     #[test]
-    fn proxy_error_status_codes() {
-        assert_eq!(
-            proxy_error_response(&ProxyError::NotReady).status(),
-            StatusCode::SERVICE_UNAVAILABLE
-        );
-        assert_eq!(
-            proxy_error_response(&ProxyError::UpstreamTooLarge { cap: 10 }).status(),
-            StatusCode::BAD_GATEWAY
-        );
+    fn proxy_error_status_and_content_type() {
+        let t = Duration::from_secs(30);
+        let r = proxy_error_response(&ProxyError::NotReady, t);
+        assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "application/json");
+        let r = proxy_error_response(&ProxyError::UpstreamTooLarge { cap: 10 }, t);
+        assert_eq!(r.status(), StatusCode::BAD_GATEWAY);
     }
 }

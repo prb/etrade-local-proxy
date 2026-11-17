@@ -32,6 +32,9 @@ use tower::ServiceExt; // for `oneshot`
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// The production overall request timeout, matching `http_client()`.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Build an in-process router whose auth state is Ready and whose upstream is
 /// pointed at the given local fake, with the supplied generators injected.
 fn ready_router(
@@ -40,21 +43,24 @@ fn ready_router(
     nonces: Arc<dyn NonceSource + Send + Sync>,
 ) -> axum::Router {
     let client = http_client().expect("build client");
-    ready_router_with(upstream_base, clock, nonces, client)
+    ready_router_with(upstream_base, clock, nonces, client, REQUEST_TIMEOUT)
 }
 
-/// Like [`ready_router`] but with a caller-supplied outbound client.
+/// Like [`ready_router`] but with a caller-supplied outbound client. Pass the
+/// same `request_timeout` the client was built with so the `timeout_seconds`
+/// reported to callers matches it.
 fn ready_router_with(
     upstream_base: String,
     clock: Arc<dyn Clock + Send + Sync>,
     nonces: Arc<dyn NonceSource + Send + Sync>,
     client: reqwest::Client,
+    request_timeout: Duration,
 ) -> axum::Router {
     let config = Arc::new(test_config());
     let authorized =
         Unauthorized.authorize(AccessToken::new("acctok"), TokenSecret::new("accsec"));
     let auth = state::ready(authorized);
-    router(app_state(config, auth, clock, nonces, client, Some(upstream_base)))
+    router(app_state(config, auth, clock, nonces, client, Some(upstream_base), request_timeout))
 }
 
 #[tokio::test]
@@ -69,7 +75,7 @@ async fn hung_upstream_returns_504_instead_of_hanging() {
     let nonces: Arc<dyn NonceSource + Send + Sync> = Arc::new(CounterNonceSource::new());
     let client = http_client_with(Duration::from_millis(100), Duration::from_millis(150))
         .expect("build client");
-    let app = ready_router_with(server.uri(), clock, nonces, client);
+    let app = ready_router_with(server.uri(), clock, nonces, client, Duration::from_millis(150));
 
     let started = std::time::Instant::now();
     let response = app

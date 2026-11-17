@@ -19,7 +19,8 @@ export ETRADE_CONSUMER_SECRET="your-consumer-secret"
 
 Run the proxy (live ETrade by default; add `--sandbox` to target the ETrade
 sandbox, `--port` to change the loopback port, default `8443`, and
-`--request-timeout-secs` to change the overall upstream timeout, default `30`):
+`--request-timeout-secs` to change the overall timeout for proxied requests,
+default `30`):
 
 ```sh
 cargo run -- --sandbox
@@ -56,7 +57,10 @@ curl -k -X POST https://127.0.0.1:8443/etrade-api/v1/accounts/list -i
 
 The proxy bounds every call to E*TRADE: a **10 s connect timeout** and a
 **30 s overall request timeout** (connect, send, and reading the full response
-body). Change the overall timeout with `--request-timeout-secs`.
+body). `--request-timeout-secs` changes the overall timeout for proxied
+requests only. The OAuth flow, the startup probe and the keep-alive keep 30 s.
+A connect timeout is also reported as `upstream_timeout`, with the overall
+timeout in `timeout_seconds`.
 
 Errors the proxy generates itself use the statuses below, with
 `Content-Type: application/json` and a body such as

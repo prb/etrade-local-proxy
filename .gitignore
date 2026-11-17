@@ -5,3 +5,6 @@
 
 # Agent workflow scaffolding (process artifacts, not product)
 /.agents
+
+# Git worktrees
+.worktrees/

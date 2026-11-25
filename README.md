@@ -53,6 +53,44 @@ curl -k -X POST https://127.0.0.1:8443/etrade-api/v1/accounts/list -i
 # -> 405
 ```
 
+## Keeping credentials in the OS keychain
+
+Instead of exporting the consumer key and secret in your shell profile, keep
+them in the OS secret store and set the variables for the proxy's command only.
+Leaving the value off the store command makes it prompt, which keeps the secret
+out of shell history and `ps` output.
+
+macOS (Keychain, via `security`):
+
+```sh
+security add-generic-password -U -a "$USER" -s etrade-consumer-key -w
+security add-generic-password -U -a "$USER" -s etrade-consumer-secret -w
+
+ETRADE_CONSUMER_KEY="$(security find-generic-password -a "$USER" -s etrade-consumer-key -w)" \
+ETRADE_CONSUMER_SECRET="$(security find-generic-password -a "$USER" -s etrade-consumer-secret -w)" \
+cargo run -- --sandbox
+```
+
+Linux (Secret Service, via `secret-tool` from libsecret):
+
+```sh
+secret-tool store --label="etrade consumer key" service etrade-consumer-key
+secret-tool store --label="etrade consumer secret" service etrade-consumer-secret
+
+ETRADE_CONSUMER_KEY="$(secret-tool lookup service etrade-consumer-key)" \
+ETRADE_CONSUMER_SECRET="$(secret-tool lookup service etrade-consumer-secret)" \
+cargo run -- --sandbox
+```
+
+Notes:
+
+- Don't pipe stdin into the proxy; it reads the OAuth verifier from stdin.
+- macOS may ask for permission the first time `security` reads an item.
+  Choosing "Always Allow" lets it read the item without asking again.
+- The proxy's environment is readable by other processes running as your user.
+  This keeps secrets out of files and dotfiles; it does not hide them from your
+  own account.
+
 ## Timeouts and errors
 
 The proxy bounds every call to E*TRADE: a **10 s connect timeout** and a
